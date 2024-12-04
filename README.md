@@ -1,29 +1,14 @@
 # Passing-through PCI devices (GPU, NVMe SSD, NIC, etc) to Virtual Machine (VM)
 
-PCI passthrough enables a virtual machine (VM) of any OS to have its dedicated hardware (eg a GPU) with near-native performance. See [PCI_passthrough_via_OVMF](https://wiki.archlinux.org/title/PCI_passthrough_via_OVMF) for more. 
+PCI passthrough enables a virtual machine (VM) of any OS to have its dedicated hardware (eg a GPU) with near-native performance. See [PCI_passthrough_via_OVMF](https://wiki.archlinux.org/title/PCI_passthrough_via_OVMF) for more.
 
+**We want to passthrough an NVMe drive (with bare-metal Windows 11 installation) and a dedicated graphics card to a VM**,
+so we can game on the same Windows flexibly both as a VM as well as a host directly on the hardware.
 
-We already have Windows 11 installed (bare-metal) on an M.2 NVMe SSD. **We now want to passthrough the NVMe drive and a dedicated graphics card to a VM**,
-so we can flexibly run the same Windows both as a VM as well as a host directly on the hardware.
+This has been a bit more challenging than I initially assumed, but it's one of the coolest things I've done on a "budget" consumer PC.
 
-So far I've got:
-
-- [AMD Adrenalin](https://www.amd.com/en/products/software/adrenalin.html) to detect GPU on Windows 11 VM
-- PyTorch to detect GPU (CUDA/ROCm) on RHEL 9.4 VM
-
-|                                                    |                                                  |
-|----------------------------------------------------|--------------------------------------------------|
-| ![adrenalin](./screenshots/win11-pt-adrenalin.png) | ![dxdiag](./screenshots/win11-pt-dxdiag.png)     |
-
-**But the GPU display output is still having rendering issue**
-
-|                                                     |                                                               |
-|-----------------------------------------------------|---------------------------------------------------------------|
-| ![boot-uefi](./screenshots/win11-pt-boot-uefi.jpeg) | ![display-glitch](./screenshots/win11-pt-display-glitch.jpeg) |
-
-The left half (of a monitor with dual display inputs) shows the host (via motherboard HDMI) running Windows VM in the virt-manager GUI.
-The right shows the passthrough GPU's output to the VM, which appears to have rendering issues after UEFI boot message,
-likely related to framebuffer settings.
+- Windows VM works, but rebooting from within Windows may not reset / reinitialize GPU properly. Rebooting externally (by the hypervisor) resolves it.
+- Desktop experience on Linux VMs is the same as on a host. ROCm works too. I hope to do some benchmarking both on graphics and compute. For now see the [screenshots](./screenshots).
 
 ## Host (Linux)
 
@@ -92,10 +77,10 @@ We achive this by binding `03:00.0`, `03:00.1`, and `6e:00.0` PCI devices to vfi
 
 ```sh
 # For AMD CPUs
-GRUB_CMDLINE_LINUX="APPEND TO EXISTING PARAMS amd_iommu=on iommu=pt video=efifb:off vfio-pci.ids=1002:744c,1002:ab30,c0a9:5421"
+GRUB_CMDLINE_LINUX="APPEND TO EXISTING PARAMS amd_iommu=on iommu=pt video=efifb:off"
 
 # For Intel CPUs
-GRUB_CMDLINE_LINUX="APPEND TO EXISTING PARAMS intel_iommu=on iommu=pt video=efifb:off vfio-pci.ids=1002:744c,1002:ab30,c0a9:5421"
+GRUB_CMDLINE_LINUX="APPEND TO EXISTING PARAMS intel_iommu=on iommu=pt video=efifb:off"
 ```
 
 | Parameter                         | Description                               | Usage                              |
@@ -108,16 +93,16 @@ GRUB_CMDLINE_LINUX="APPEND TO EXISTING PARAMS intel_iommu=on iommu=pt video=efif
 3. Configure VFIO by binding devices to vfio-pci driver for passthrough and interrupt handling
 
 ```sh
-cat <<EOF | sudo tee /etc/modprobe.d/vfio.conf 
-options vfio-pci ids=1002:744c,1002:ab30,c0a9:5421    ## optional if supplied vfio-pci.ids in GRUB_CMDLINE_LINUX
+cat <<EOF | sudo tee /etc/modprobe.d/vfio.conf
+options vfio-pci ids=1002:744c,1002:ab30,c0a9:5421
 options vfio_iommu_type1 allow_unsafe_interrupts=1
 softdep drm pre: vfio-pci
 EOF
 ```
 
 If the driver isn't shared with host at all, optionally blacklist default/conflicting drivers.
-The integrated GPU in Ryzen 7000 series CPU also uses `amdgpu` driver, so I don't.
-Blacklisting drivers still works through *software rendering* but suffers a bit of performance overhead. 
+The integrated GPU in Ryzen 7000 series CPU also uses `amdgpu` driver, so I don't block it.
+Blacklisting it still works through *software rendering* but suffers a bit of performance overhead. 
 
 ```sh
 cat <<EOF | sudo tee /etc/modprobe.d/vfio-blacklist.conf 
@@ -140,7 +125,7 @@ sudo dracut -f --kver $(uname -r)
 # sudo dracut -f --regenerate-all
 ```
 
-- Debian-derived distros eg Ubuntu: gotta checkout; if you know, feel free to share your knowledge by creating a PR.
+- Debian-derived distros eg Ubuntu: look up
 
 5. Generate the GRUB2 configuration file
 ```sh
@@ -205,8 +190,8 @@ sudo virt-install --name win11-pt-1 \
   --vcpus 16,maxvcpus=16,sockets=1,cores=8,threads=2 \
   --memory 32768 \
   --os-variant win11 \
-  --graphics spice,gl=yes,listen=none \
-  --video virtio \
+  --graphics none \
+  --video model.type=none \
   --sound ich9 \
   --console pty,target.type=virtio \
   --noautoconsole \
@@ -224,6 +209,10 @@ sudo virt-install --name win11-pt-1 \
   --import
 ```
 
+`--graphics none --video model.type=none` disables video adpater on VM as well as graphical access protocol to VM on host.
+It's useful, and minimizes overhead, when using dedicated monitor for VM.
+`--graphics spice --video virtio` appears to work well with passthrough GPU; the VM *sees* two displays.
+
 The `--disk path=/var/lib/libvirt/boot/virtio-win.iso,device=cdrom` attaches Windows drivers for VirtIO devices as a CDROM.
 [`virtio-win`](https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/virtio-win.iso) drivers are
 apparently required for networking etc to work seamlessly.
@@ -236,5 +225,26 @@ When installing Windows afresh either on a clean NVMe or VirtIO drive, remove `-
 - `--disk /var/lib/libvirt/images/win11-pt-1.qcow2,size=500,bus=virtio`   Attach a 500 GiB (Gibibytes) VirtIO SCSI storage device. Requires `virtio-win` drivers
 - `--boot hd,cdrom,menu=on`                                               Specify boot order
 
-- ### RHEL 9.4
-See [extras.md](./extras.md) 
+- ### Fedora 41
+```sh
+sudo virt-install --name fedora-41-ws-1 \
+  --cpu host-passthrough,cache.mode=passthrough \
+  --vcpus 16,maxvcpus=16,sockets=1,cores=8,threads=2 \
+  --memory 32768 \
+  --os-variant fedora40 \
+  --graphics none \
+  --video model.type=none \
+  --sound ich9 \
+  --serial pty \
+  --console pty,target.type=virtio \
+  --noautoconsole \
+  --network bridge=br-wlp114s0 \
+  --network bridge=virbr0 \
+  --boot uefi \
+  --boot hd,cdrom,menu=on \
+  --disk /var/lib/libvirt/images/fedora-41-ws-1.qcow2,size=120,bus=virtio \
+  --cdrom /var/lib/libvirt/boot/Fedora-Workstation-Live-x86_64-41-1.4.iso \
+  --boot loader=/usr/share/edk2/ovmf/OVMF_CODE.fd,loader.readonly=yes,loader.type=pflash,nvram.template=/usr/share/edk2/ovmf/OVMF_VARS.fd \
+  --hostdev pci_0000_03_00_0 \
+  --hostdev pci_0000_03_00_1
+```

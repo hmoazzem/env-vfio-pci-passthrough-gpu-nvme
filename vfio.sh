@@ -1,9 +1,11 @@
+# source 
 vfio() {
     local action=$1
     local pci_addr=$2
     local driver=$3
 
     if [[ -z $action || -z $pci_addr || -z $driver || $# -gt 3 ]]; then
+        echo " source vfio.sh"
         echo "Usage: vfio bind|unbind <device> <driver>"
         echo "Example:"
         echo "  vfio bind 6e:00.0 nvme  # Bind the PCI device 6e:00.0 to the vfio-pci driver"
@@ -32,6 +34,7 @@ vfio() {
             ;;
         *)
             echo "Invalid action: $action. Use 'bind' or 'unbind'."
+            echo " source vfio.sh"
             echo "Usage: vfio bind|unbind <device> <driver>"
             echo "Example:"
             echo "  vfio bind 6e:00.0 nvme  # Bind the PCI device 6e:00.0 to the vfio-pci driver"
