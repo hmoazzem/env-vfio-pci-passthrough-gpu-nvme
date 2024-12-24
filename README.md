@@ -248,3 +248,5 @@ sudo virt-install --name fedora-41-ws-1 \
   --hostdev pci_0000_03_00_0 \
   --hostdev pci_0000_03_00_1
 ```
+
+For Linux VMs [cloud-init](./cloud-init.md) is waaay simpler, faster.
